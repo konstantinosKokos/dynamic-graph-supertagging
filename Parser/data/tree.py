@@ -1,6 +1,9 @@
+from __future__ import annotations
 from abc import ABC
 from typing import TypeVar, Generic, Any, Callable
 from itertools import zip_longest
+
+from dataclasses import dataclass
 
 
 Node = TypeVar('Node')
@@ -17,6 +20,7 @@ class Tree(ABC, Generic[Node]):
     def __repr__(self) -> str: return tree_repr(self)
     def nodes_and_arities(self) -> list[tuple[Node, int]]: return nodes_and_arities(self)
     def fmap(self, f: Callable[[Node], Other]) -> 'Tree[Other]': return tree_fmap(self, f)
+    def levels(self) -> list[list[Node]]: return levels(self)
 
 
 class Leaf(Tree[Node]):
@@ -121,6 +125,10 @@ def breadth_first(tree: Tree[Node]) -> list[Node]:
     return sum(levels(tree), [])
 
 
+def depth_slice(trees: list[Tree[Node]], depth: int) -> list[list[Node]]:
+    return [treelvls[depth] if len(treelvls := levels(tree)) > depth else [] for tree in trees]
+
+
 def dfs_to_tree(sequence: list[Node]) -> Tree[Node]:
     ...
 
@@ -128,6 +136,21 @@ def dfs_to_tree(sequence: list[Node]) -> Tree[Node]:
 def bfs_to_tree(sequence: list[Node]) -> Tree[Node]:
     ...
 
+
+@dataclass
+class Symbol:
+    __match_args__ = ('name',)
+
+    name: str
+    index: int | None = None
+    logprob: float | None = None
+
+    def __repr__(self) -> str: return self.name if self.index is None else f"{self.name}:{self.index}"
+    def __eq__(self, other) -> bool: return isinstance(other, Symbol) and self.name == other.name
+    def __hash__(self) -> int: return hash((self.name, self.index))
+
+    def plain(self) -> Symbol:
+        return Symbol(self.name, None, None)
 
 
 # tree = Binary(0, Binary(1, Leaf(3), Binary(4, Leaf(6), Unary(7, Leaf(9)))), Unary(2, Unary(5, Leaf(8))))

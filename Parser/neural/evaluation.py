@@ -1,145 +1,41 @@
-from ..neural.model import Parser
-from ..data.preprocessing import Sample, load_stored
-from ..parsing.postprocessing import Analysis
-from ..neural.utils import AtomTokenizer, Tokenizer
+import pdb
+import pickle
+from operator import eq
 
-import torch
+from ..data.vectorization import AtomTokenizer, Tree, Symbol, Leaf, Binary
 
-from typing import Callable
-from functools import reduce
-from operator import eq, add
+atoken = AtomTokenizer.from_file()
 
 
-def make_stuff() -> tuple[Parser, list[Sample]]:
-    train, dev, test = load_stored('./processed.p')
-    parser = Parser(AtomTokenizer(), Tokenizer(), device='cuda')
-    parser.load_state_dict(torch.load('./stored_models/model_weights.model',
-                                      map_location='cuda')['model_state_dict'])
-    return parser, sorted(list(filter(lambda x: len(x.polish) < 100, test)), key=lambda x: len(x.polish))
+def levels_to_trees(decoder_output: list[list[int]]) -> list[Tree[Symbol]]:
+    levels = [[atoken.id_to_token[i] for i in level] for level in decoder_output]
+    fringe: list[Tree[Symbol]] = [Leaf(symbol) for symbol in levels[-1]]
+    for level in reversed(levels[:-1]):
+        stack = list(reversed(fringe))
+        fringe = []
+        for symbol in level:
+            if atoken.symbol_arities[symbol] == 2:
+                right = stack.pop()
+                left = stack.pop()
+                fringe.append(Binary(symbol, left, right))
+            else:
+                fringe.append(Leaf(symbol))
+    return fringe
 
 
-def infer_dataset(model: Parser, data: list[Sample], beam_size: int, batch_size: int) -> list[list[Analysis]]:
-    ret = []
-    start_from = 0
-    while start_from < len(data):
-        batch = data[start_from: min(start_from + batch_size, len(data))]
-        start_from += batch_size
-        if beam_size == 1:
-            batch_analyses = model.infer([' '.join(sample.words) for sample in batch], beam_size,
-                                         max_decode_length=max([len(s.polish) for s in batch]))
-        else:
-            batch_analyses = model.infer([' '.join(sample.words) for sample in batch], beam_size)
-        ret += batch_analyses
-    return ret
+def trees_to_frames(trees: list[Tree[Symbol]], splitpoints: list[int]) -> list[list[Tree[Symbol]]]:
+    return [trees[start:end] for start, end in zip([0] + splitpoints, splitpoints)]
 
 
-def oracle_run(model: Parser, data: list[Sample], batch_size: int) -> list[list[Analysis]]:
-    ret = []
-    start_from = 0
-    while start_from < len(data):
-        batch = data[start_from: min(start_from + batch_size, len(data))]
-        start_from += batch_size
-        batch_analyses = model.parse_with_oracle(batch)
-        ret += batch_analyses
-    return ret
-
-
-def data_to_analyses(data: list[Sample]) -> list[Analysis]:
-    return [Analysis.from_sample(sample) for sample in data]
-
-
-def types_correct(x: Analysis, y: Analysis) -> bool:
-    return x.types == y.types
-
-
-def term_correct(x: Analysis, y: Analysis, check_decoration: bool) -> bool:
-    y_term = y.to_proofnet().print_term(show_words=False, show_types=False, show_decorations=check_decoration)
-    if not x.valid() or x.traceback is not None:
-        return False
-    try:
-        x_term = x.to_proofnet().print_term(show_words=False, show_types=False, show_decorations=check_decoration)
-    except (AssertionError, AttributeError):
-        return False
-    return x_term == y_term
-
-
-def passing(x: Analysis) -> bool:
-    return x.traceback is None
-
-
-def invariance(x: Analysis) -> bool:
-    return x.valid()
-
-
-def match_in_beam(beam: list[Analysis], correct: Analysis, cmp: Callable[[Analysis, Analysis], bool]) -> bool:
-    return any((cmp(x, correct) for x in beam))
-
-
-def matches_in_beams(beams: list[list[Analysis]], corrects: list[Analysis],
-                     cmp: Callable[[Analysis, Analysis], bool]) -> int:
-    return len(list(filter(lambda equal: equal,
-                           (match_in_beam(beam, correct, cmp) for beam, correct in zip(beams, corrects)))))
-
-
-def measure_lambda_accuracy(beams: list[list[Analysis]], corrects: list[Analysis], check_decorations: bool) -> float:
-    def check(x: Analysis, y: Analysis) -> bool:
-        return term_correct(x, y, check_decoration=check_decorations)
-    return matches_in_beams(beams, corrects, check) / len(beams)
-
-
-def measure_typing_accuracy(beams: list[list[Analysis]], corrects: list[Analysis]) -> float:
-    return matches_in_beams(beams, corrects, types_correct) / len(beams)
-
-
-def measure_coverage(beams: list[list[Analysis]]) -> float:
-    return len(list(filter(lambda beam: any(map(passing, beam)), beams))) / len(beams)
-
-
-def measure_inv_correct(beams: list[list[Analysis]]) -> float:
-    return len(list(filter(lambda beam: any(map(invariance, beam)), beams))) / len(beams)
-
-
-def token_accuracy(x: Analysis, y: Analysis) -> tuple[int, int]:
-    if x.types is None:
-        return 0, len(y.types)
-    return len(list(filter(lambda pt: eq(*pt), zip(x.types, y.types)))), len(y.types)
-
-
-def best_in_beam(beam: list[Analysis], correct: Analysis, comp: Callable[[Analysis, Analysis], tuple[int, int]])  \
-        -> tuple[int, int]:
-    return max(list(map(lambda x: comp(x, correct), beam)))
-
-
-def measure_token_accuracy(beams: list[list[Analysis]], corrects: list[Analysis]) -> float:
-    best, total = list(zip(*list(map(lambda beam, correct:
-                                     best_in_beam(beam, correct, token_accuracy),
-                                     beams, corrects))))
-    return reduce(add, best) / reduce(add, total)
-
-
-def fill_table(kappas: list[int], batch_size: int = 256) -> None:
-    parser, data = make_stuff()
-
-    truths = data_to_analyses(data)
-    for k in kappas:
-        print('=' * 64)
-        print(f'{k=}')
-        print('=' * 64)
-        predictions = infer_dataset(parser, data, k, batch_size=batch_size)
-        coverage = measure_coverage(predictions)
-        print(f'{coverage=}')
-        invc = measure_inv_correct(predictions)
-        print(f'{invc=}')
-        token_acc = measure_token_accuracy(predictions, truths)
-        print(f'{token_acc=}')
-        typing_acc = measure_typing_accuracy(predictions, truths)
-        print(f'{typing_acc=}')
-        lambda_acc = measure_lambda_accuracy(predictions, truths, False)
-        print(f'{lambda_acc=}')
-        lambda_dec_acc = measure_lambda_accuracy(predictions, truths, True)
-        print(f'{lambda_dec_acc=}')
-
-
-def do_oracle_run():
-    parser, data = make_stuff()
-    return oracle_run(parser, data, 512), data_to_analyses(data)
+def evaluate_results_file(results_file: str):
+    with open(results_file, 'rb') as f:
+        outs = pickle.load(f)
+    preds = [levels_to_trees(out[0]) for out in outs]
+    truths = [levels_to_trees(out[1]) for out in outs]
+    pred_frames = [trees_to_frames(preds[i], outs[i][2]) for i in range(len(outs))]
+    true_frames = [trees_to_frames(truths[i], outs[i][2]) for i in range(len(outs))]
+    for p, t in zip(sum(preds, []), sum(truths, [])):
+        if p != t:
+            print(f'{p} |||  {t}')
+    print(sum(map(eq, sum(preds, []), sum(truths, [])))/len(sum(truths, [])))
+    print(sum(map(eq, sum(pred_frames, []), sum(true_frames, [])))/len(sum(pred_frames, [])))
