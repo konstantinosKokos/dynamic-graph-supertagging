@@ -1,4 +1,4 @@
-from Parser.neural.train import train, evaluate
+from dyngraphst.neural.train import train, evaluate
 
 
 def train_nl(device: str, storage_dir: str, log_path: str, init_epoch: int = 0,

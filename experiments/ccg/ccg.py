@@ -1,7 +1,7 @@
 import pdb
 
-from Parser.data.tree import Tree, Leaf, Binary, Symbol
-from Parser.data.preprocessing import Sample, make_symbol_map, extract_unique_symbols, pad_mwus
+from dyngraphst.data.tree import Tree, Leaf, Binary, Symbol
+from dyngraphst.data.preprocessing import Sample, make_symbol_map, extract_unique_symbols, pad_mwus
 import os
 
 from typing import Optional
